@@ -1,5 +1,6 @@
 #include "util.h"
 #pragma once
+#include <array>
 
 #ifndef __always_inline
 #define __always_inline inline __attribute__((always_inline))
@@ -13,100 +14,149 @@ __always_inline int binary_search_stl(std::vector<PV>& arr, int target) noexcept
 }
 
 __always_inline int binary_search_branch(std::vector<PV>& arr, int target) noexcept {
-    int left = 0, right = arr.size() - 1;
-    while (left <= right) {
-      int mid = left + ((right - left) >> 1);
-
-        if (arr[mid].prc == target) return mid;
-
-        if (arr[mid].prc < target) 
-            left = mid + 1;
-        else 
-            right = mid - 1;
+    int left = 0, right = arr.size();
+    while (left < right) {
+      int mid = left + ((right - left) / 2);
+      if (arr[mid].prc < target) 
+          left = mid + 1;
+      else 
+          right = mid;
     }
-    return -1;
+
+    return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
 }
 
-// 修正后的无分支版本
-__always_inline int binary_search_branchless(std::vector<PV>& arr, int target) noexcept {
-  int left = 0, right = arr.size() - 1;
-  while (left <= right) {
+__always_inline int binary_search_bit_op(std::vector<PV>& arr, int target) noexcept {
+    int left = 0, right = arr.size();
+    while (left < right) {
       int mid = left + ((right - left) >> 1);
-      if (arr[mid].prc == target) return mid; // 等于的判断通常保留
-      
-      int next_left_val = mid + 1;
-      int next_right_val = mid - 1;
+      if (arr[mid].prc < target) 
+          left = mid + 1;
+      else 
+          right = mid;
+    }
 
-      left = (arr[mid].prc < target) ? next_left_val : left;
-      right = (arr[mid].prc < target) ? right : next_right_val;
+    return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+__always_inline int binary_search_unlikely(std::vector<PV>& arr, int target) noexcept {
+  int left = 0;
+  int right = arr.size();
+  
+  while (left < right) {
+    int mid = left + ((right - left) >> 1);
+    
+    if (arr[mid].prc <= target) [[unlikely]] {
+      left = mid + 1;  // 目标在右半部分或就是 mid
+    } else {
+      right = mid;  // 目标在左半部分
+    }
   }
+  
+  return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+/**
+ * ternary operator is more likely to trigger the `cmov` instruction than `if else`？
+ * the result truns out this assumption is wrong.
+ */
+__always_inline int binary_search_ternary(std::vector<PV>& arr, int target) noexcept {
+  int left = 0, right = arr.size();
+  while (left < right) {
+    int mid = left + ((right - left) >> 1);    
+    
+    left = (arr[mid].prc < target) ? mid + 1 : left;
+    right = (arr[mid].prc < target) ? right : mid;
+  }
+  return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+/**
+ * in binary_search_ternary(), the cost of cmov instruction is only 1 cycle, the memory access is also low.
+ * in array, it also aims for removing the branch, but construct the 2 item array is more than 1 cycle.
+ * prefer the ternary OP over the array.
+ */
+__always_inline int binary_search_array(std::vector<PV>& arr, int target) noexcept {
+  int left = 0, right = arr.size();
+  while (left < right) {
+    int mid = left + ((right - left) >> 1);    
+    
+    left = std::array<int, 2>{left, mid + 1}[arr[mid].prc < target];
+    right = std::array<int, 2>{mid, right}[arr[mid].prc < target];
+
+  }
+  return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+
+__always_inline int binary_search_branchless_mask(std::vector<PV>& arr, int target) noexcept {
+  int left = 0, right = arr.size();
+  while (left < right) {
+    int mid = left + ((right - left) >> 1);
+    
+    int mask = -(arr[mid].prc < target);
+    
+    left = (mask & (mid + 1)) | (~mask & left);
+    right = (~mask & (mid)) | (mask & right);
+  }
+
+  return (left < arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+__always_inline int binary_search_75percent(std::vector<PV>& arr, int target) noexcept {
+  int left = 0, right = arr.size(); // [left, right)
+  while (left < right) {
+    int len = right - left;
+    int off = (len + 3) >> 2; // ceil(len/4), ensure off>=1
+    int mid = right - off;    // left <= mid < right
+    if (arr[mid].prc < target) left = mid + 1; else right = mid; // shrink
+  }
+  return (left < (int)arr.size() && arr[left].prc == target) ? left : -1;
+}
+
+
+__always_inline int less_instruction_branchless_return_at_end(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
+  int left = 0;
+  int len = size;
+  
+  while (len > 1) {
+      int half = len >> 1;
+      int mid = left + half;
+      
+      left = arr[mid].prc < target ? mid : left;
+      len -= half;
+  }
+  
+  return (left < size && arr[left].prc == target) ? left : -1;
+}
+
+__always_inline int less_instruction_branchless_return_midway(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
+  int left = 0;
+  int len = size;
+  
+  while (len > 1) {
+      int half = len >> 1;
+      int mid = left + half;
+      if (arr[mid].prc == target) return mid;
+
+      left = arr[mid].prc < target ? mid : left;
+      len -= half;
+  }
+  
   return -1;
 }
 
-__always_inline int binary_search_branchless1(std::vector<PV>& arr, int target) noexcept {
-  int left = 0, right = arr.size() - 1;
-  while (left < right) {  // 注意: < 而不是 <=
-    int mid = left + ((right - left) >> 1);
-    
-    // 核心技巧：使用位运算避免分支
-    // 如果 arr[mid].prc < target, mask = -1 (all 1s)
-    // 否则 mask = 0
-    int mask = -(arr[mid].prc < target);
-    
-    // branchless 更新
-    left = (mask & (mid + 1)) | (~mask & left);
-    right = (~mask & (mid - 1)) | (mask & right);
-  }
+__always_inline int less_instruction_branchless_likely(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
+  int left = 0;
+  int len = size;
 
-  return (arr[left].prc == target) ? left : -1;
-}
-
-__always_inline int binary_search_branchless2_0(std::vector<PV>& arr, int target) noexcept {
-  int size = arr.size();
-  int left = 0;
-  int len = size;
-  
-  // 展开循环，每次确定一半
   while (len > 1) {
       int half = len >> 1;
       int mid = left + half;
       
-      if (arr[mid].prc == target) return mid;
-      // 使用 __builtin_expect 提示
-      left = arr[mid].prc < target ? mid : left;
-      len -= half;
-  }
-  
-  return (left < size && arr[left].prc == target) ? left : -1;
-}
-__always_inline int binary_search_branchless2_1(std::vector<PV>& arr, int target) noexcept {
-  int size = arr.size();
-  int left = 0;
-  int len = size;
-  
-  // 展开循环，每次确定一半
-  while (len > 1) {
-      int half = len >> 1;
-      int mid = left + half;
-      
-      // 使用 __builtin_expect 提示
-      left = arr[mid].prc < target ? mid : left;
-      len -= half;
-  }
-  
-  return (left < size && arr[left].prc == target) ? left : -1;
-}
-__always_inline int binary_search_branchless2_2(std::vector<PV>& arr, int target) noexcept {
-  int size = arr.size();
-  int left = 0;
-  int len = size;
-  
-  // 展开循环，每次确定一半
-  while (len > 1) {
-      int half = len >> 1;
-      int mid = left + half;
-      
-      // 使用 __builtin_expect 提示
       left = __builtin_expect(arr[mid].prc < target, 1) ? mid : left;
       len -= half;
   }
@@ -114,17 +164,15 @@ __always_inline int binary_search_branchless2_2(std::vector<PV>& arr, int target
   return (left < size && arr[left].prc == target) ? left : -1;
 }
 
-__always_inline int binary_search_branchless2_3(std::vector<PV>& arr, int target) noexcept {
+__always_inline int less_instruction_branchless_75p_and_return_at_end(std::vector<PV>& arr, int target) noexcept {
   int size = arr.size();
   int left = 0;
   int len = size;
   
-  // 展开循环，每次确定一半
   while (len > 1) {
       int half = (len >> 1) + (len >> 2);
       int mid = left + half;
       
-      // 使用 __builtin_expect 提示
       left = arr[mid].prc < target ? mid : left;
       len -= half;
   }
@@ -132,110 +180,56 @@ __always_inline int binary_search_branchless2_3(std::vector<PV>& arr, int target
   return (left < size && arr[left].prc == target) ? left : -1;
 }
 
-__always_inline int binary_search_branchless3(std::vector<PV>& arr, int target) noexcept {
+__always_inline int less_instruction_branchless_75p_and_return_at_mid(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
   int left = 0;
-  int right = arr.size() - 1;
+  int len = size;
   
-  // 每次将搜索范围缩小一半
-  while (left < right) {
-      int mid = left + ((right - left + 1) >> 1);  // 注意: +1 保证向上取整
+  while (len > 1) {
+      int half = (len >> 1) + (len >> 2);
+      int mid = left + half;
+
+      if (arr[mid].prc == target) return mid;
       
-      // 关键：根据比较结果移动 left 或保持不变
-      // 如果 arr[mid] <= target，说明目标在 [mid, right]
-      // 否则目标在 [left, mid-1]
-      left = __builtin_expect(arr[mid].prc <= target, 1) ? mid : left;
-      right = __builtin_expect(arr[mid].prc <= target, 1) ? right : mid - 1;
+      left = arr[mid].prc < target ? mid : left;
+      len -= half;
   }
   
-  return (left < arr.size() && arr[left].prc == target) ? left : -1;
-}
-
-__always_inline int binary_search_branchless4(std::vector<PV>& arr, int target) noexcept {
-  int left = 0;
-  int right = arr.size() - 1;
-  
-  while (left < right) {
-      int mid = left + ((right - left + 1) >> 1);
-      
-      // 使用条件移动而不是三元运算符
-      // 这种写法更容易生成 cmov 指令
-      if (__builtin_expect(arr[mid].prc <= target, 1)) {
-          left = mid;  // 目标在右半部分或就是 mid
-      } else {
-          right = mid - 1;  // 目标在左半部分
-      }
-  }
-  
-  return (arr[left].prc == target) ? left : -1;
-}
-
-__always_inline int binary_search_branchless5(std::vector<PV>& arr, int target) noexcept {
-  int left = 0;
-  int right = arr.size() - 1;
-  
-  while (left < right) {
-      int mid = left + ((right - left + 1) >> 1);
-      
-      // 创建掩码：如果 arr[mid].prc <= target，mask = -1，否则 mask = 0
-      int cond = arr[mid].prc <= target;
-      int mask = -cond;  // 0 或 -1
-      
-      // branchless 更新
-      left = (mask & mid) | (~mask & left);
-      right = (~mask & (mid - 1)) | (mask & right);
-  }
-  
-  return (arr[left].prc == target) ? left : -1;
-}
-
-__always_inline int binary_search_75percent(std::vector<PV>& arr, int target) noexcept {
-    int left = 0, right = arr.size() - 1;
-    while (left <= right) {
-      int mid = right - ((right - left) >> 2);
-
-        if (arr[mid].prc == target) return mid;
-
-        if (arr[mid].prc < target) 
-            left = mid + 1;
-        else 
-            right = mid - 1;
-    }
-    return -1;
-}
-
-__always_inline int binary_search_83percent(std::vector<PV>& arr, int target) noexcept {
-    int left = 0, right = arr.size() - 1;
-    while (left <= right) {
-      int mid = right - ((right - left) >> 3) - ((right - left) >> 4);
-
-        if (arr[mid].prc == target) return mid;
-
-        if (arr[mid].prc < target) 
-            left = mid + 1;
-        else 
-            right = mid - 1;
-    }
-    return -1;
+  return (left < size && arr[left].prc == target) ? left : -1;
 }
 
 __always_inline int binary_search_liner(std::vector<PV>& arr, int target) noexcept {
     int left = 0, right = arr.size() - 1;
-    while (left <= right) {
+    while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
-
         if (arr[mid].prc == target) return mid;
-
-        if (left + 64 >= right) {
-          for (int i = left; i <= right; i++) {
-            if (arr[i].prc == target) return i;
-          }
-          return -1;
-        }
 
         if (arr[mid].prc < target) 
             left = mid + 1;
         else 
             right = mid - 1;
+    }
+
+    for (int i = left; i <= right; i++) {
+      if (arr[i].prc == target) return i;
+    }
+    return -1;
+}
+
+__always_inline int binary_search_liner_75(std::vector<PV>& arr, int target) noexcept {
+    int left = 0, right = arr.size() - 1;
+    while (left + 32 <= right) {
+      int mid = left + ((right - left) >> 1) + ((right - left) >> 2);
+        if (arr[mid].prc == target) return mid;
+
+        if (arr[mid].prc < target) 
+            left = mid + 1;
+        else 
+            right = mid - 1;
+    }
+
+    for (int i = left; i <= right; i++) {
+      if (arr[i].prc == target) return i;
     }
     return -1;
 }
@@ -243,45 +237,37 @@ __always_inline int binary_search_liner(std::vector<PV>& arr, int target) noexce
 // not helpful
 __always_inline int binary_search_reverse_liner(std::vector<PV>& arr, int target) noexcept {
     int left = 0, right = arr.size() - 1;
-    while (left <= right) {
+    while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
-
         if (arr[mid].prc == target) return mid;
-
-        if (left + 64 >= right) {
-          for (int i = right; i >= left; i--) {
-            if (arr[i].prc == target) return i;
-          }
-          return -1;
-        }
 
         if (arr[mid].prc < target) 
             left = mid + 1;
         else 
             right = mid - 1;
     }
+
+    for (int i = right; i >= left; i--) {
+      if (arr[i].prc == target) return i;
+    }
     return -1;
 }
 
 __always_inline int binary_search_pragma(std::vector<PV>& arr, int target) noexcept {
     int left = 0, right = arr.size() - 1;
-    while (left <= right) {
+    while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
-
         if (arr[mid].prc == target) return mid;
-        
-        if (left + 64 >= right) {
-          #pragma GCC ivdep // ivdep: IgnoreVectorDEPendencies, 告诉编译器忽略循环中的潜在数据依赖，允许进行向量化优化。
-          for (int i = left; i <= right; i++) {
-            if (arr[i].prc == target) return i;
-          }
-          return -1;
-        }
 
         if (arr[mid].prc < target) 
             left = mid + 1;
         else 
             right = mid - 1;
+    }
+
+    #pragma GCC ivdep // ivdep: IgnoreVectorDEPendencies, 告诉编译器忽略循环中的潜在数据依赖，允许进行向量化优化。
+    for (int i = left; i <= right; i++) {
+      if (arr[i].prc == target) return i;
     }
     return -1;
 }
@@ -289,67 +275,58 @@ __always_inline int binary_search_pragma(std::vector<PV>& arr, int target) noexc
 // not helpful
 __always_inline int binary_search_unloop(std::vector<PV>& arr, int target) noexcept {
     int left = 0, right = arr.size() - 1;
-    while (left <= right) {
+    while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
 
         if (arr[mid].prc == target) return mid;
-        
-        if (left + 64 >= right) {
-          #pragma GCC unroll 8
-          for (int i = left; i <= right; i++) {
-            if (arr[i].prc == target) return i;
-          }
-          return -1;
-        }
 
         if (arr[mid].prc < target) 
             left = mid + 1;
         else 
             right = mid - 1;
     }
+
+    #pragma GCC unroll 8
+    for (int i = left; i <= right; i++) {
+      if (arr[i].prc == target) return i;
+    }
     return -1;
 }
-
-
 
 __always_inline int binary_search_simd(std::vector<PV>& arr, int target) noexcept {
   int left = 0, right = arr.size() - 1;
     
-  while (left <= right) {
+  while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
       if (arr[mid].prc == target) return mid;
-      
-      if (right - left <= 64) {
-          __m256i target_vec = _mm256_set1_epi64x(target);
-          int i = left;
-
-          for (; i + 3 <= right; i += 4) {
-              __m256i prc_vec = _mm256_set_epi64x(
-                  arr[i + 3].prc,
-                  arr[i + 2].prc,
-                  arr[i + 1].prc,
-                  arr[i + 0].prc
-              );
-              
-              __m256i cmp = _mm256_cmpeq_epi64(prc_vec, target_vec);
-              int mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
-              
-              if (mask) {
-                  return i + __builtin_ctz(mask);
-              }
-          }
-          
-          // 处理剩余元素
-          for (; i <= right; ++i) {
-              if (arr[i].prc == target) return i;
-          }
-          return -1;
-      }
       
       if (arr[mid].prc < target) 
           left = mid + 1;
       else 
           right = mid - 1;
+  }
+  __m256i target_vec = _mm256_set1_epi64x(target);
+  int i = left;
+
+  for (; i + 3 <= right; i += 4) {
+      __m256i prc_vec = _mm256_set_epi64x(
+          arr[i + 3].prc,
+          arr[i + 2].prc,
+          arr[i + 1].prc,
+          arr[i + 0].prc
+      );
+      
+      __m256i cmp = _mm256_cmpeq_epi64(prc_vec, target_vec);
+      int mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
+      
+      if (mask) {
+          return i + __builtin_ctz(mask);
+      }
+  }
+  
+  // 处理剩余元素
+  for (; i <= right; ++i) {
+      if (arr[i].prc == target) return i;
   }
   return -1;
 }
@@ -362,53 +339,90 @@ __always_inline int binary_search_simd(std::vector<PV>& arr, int target) noexcep
 __always_inline int binary_search_simd_gather(std::vector<PV>& arr, int64_t target) noexcept {
   int left = 0, right = arr.size() - 1;
   
-  while (left <= right) {
+  while (left + 32 <= right) {
       int mid = left + ((right - left) >> 1);
       
       if (arr[mid].prc == target) return mid;
-      
-      // 当范围小于等于32时，使用SIMD线性搜索
-      if (right - left <= 64) {
-          __m256i target_vec = _mm256_set1_epi64x(target);
-          
-          int i = left;
-          // 使用gather指令收集非连续的prc值
-          for (; i + 3 <= right; i += 4) {
-              // 创建索引（每个PV结构体16字节，prc在偏移0处）
-              __m256i indices = _mm256_set_epi64x(
-                  (i + 3) * sizeof(PV),
-                  (i + 2) * sizeof(PV),
-                  (i + 1) * sizeof(PV),
-                  (i + 0) * sizeof(PV)
-              );
-              
-              // 使用gather从非连续地址加载4个int64
-              __m256i prc_vec = _mm256_i64gather_epi64(
-                  (const long long*)&arr[0], 
-                  indices, 
-                  1  // scale = 1
-              );
-              
-              // 比较
-              __m256i cmp = _mm256_cmpeq_epi64(prc_vec, target_vec);
-              int mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
-              
-              if (mask) {
-                  return i + __builtin_ctz(mask);
-              }
-          }
-          
-          // 处理剩余元素
-          for (; i <= right; ++i) {
-              if (arr[i].prc == target) return i;
-          }
-          return -1;
-      }
       
       if (arr[mid].prc < target) 
           left = mid + 1;
       else 
           right = mid - 1;
+  }
+
+  __m256i target_vec = _mm256_set1_epi64x(target);
+  
+  int i = left;
+  // 使用gather指令收集非连续的prc值
+  for (; i + 3 <= right; i += 4) {
+      // 创建索引（每个PV结构体16字节，prc在偏移0处）
+      __m256i indices = _mm256_set_epi64x(
+          (i + 3) * sizeof(PV),
+          (i + 2) * sizeof(PV),
+          (i + 1) * sizeof(PV),
+          (i + 0) * sizeof(PV)
+      );
+      
+      // 使用gather从非连续地址加载4个int64
+      __m256i prc_vec = _mm256_i64gather_epi64(
+          (const long long*)&arr[0], 
+          indices, 
+          1  // scale = 1
+      );
+      
+      // 比较
+      __m256i cmp = _mm256_cmpeq_epi64(prc_vec, target_vec);
+      int mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
+      
+      if (mask) {
+          return i + __builtin_ctz(mask);
+      }
+  }
+  
+  // 处理剩余元素
+  for (; i <= right; ++i) {
+      if (arr[i].prc == target) return i;
+  }
+  return -1;
+}
+
+
+
+__always_inline int binary_23_reverse_unloop_ivdep(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
+  int left = 0;
+  int len = size;
+  
+  while (len >= 32) {
+      int half = (len >> 1) + (len >> 2);
+      int mid = left + half;
+
+      left = arr[mid].prc < target ? mid : left;
+      len -= half;
+  }
+    
+  #pragma GCC unroll 8
+  #pragma GCC ivdep // ivdep: IgnoreVectorDEPendencies, 告诉编译器忽略循环中的潜在数据依赖，允许进行向量化优化。
+  for (int i = left + len - 1; i >= left; --i) {
+    if (arr[i].prc == target) return i;
+  }
+  return -1;
+}
+
+__always_inline int bit_75p_early_ret_linner_scan(std::vector<PV>& arr, int target) noexcept {
+  int size = arr.size();
+  int left = 0;
+  int len = size;
+  while (len > 4) {
+    int half = (len >> 1) + (len >> 2);
+    int mid = left + half;
+
+    left = arr[mid].prc < target ? mid : left;
+    len -= half;
+  }
+
+  for (int i = left; i < left + len; ++i) {
+    if (arr[i].prc == target) return i;
   }
   return -1;
 }
